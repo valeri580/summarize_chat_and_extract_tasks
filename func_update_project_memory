@@ -1,0 +1,144 @@
+def func_update_project_memory(arguments):
+    # ========================
+    # ARGUMENTS VALIDATION (CRITICAL)
+    # ========================
+    if not isinstance(arguments, dict):
+        return {
+            "result": {
+                "error": "invalid_arguments",
+                "details": "arguments must be dict"
+            },
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0.0
+            },
+            "status": "error"
+        }
+
+    debug = arguments.get("debug", False)
+
+    if debug:
+        print(f"DEBUG start {__name__}")
+        print(f"DEBUG args {arguments}")
+
+    # ========================
+    # DEFAULT USAGE (CRITICAL)
+    # ========================
+    usage = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0.0
+    }
+
+    try:
+        # ========================
+        # IMPORTS
+        # ========================
+        from smaipl.usd_to_smaipl_tokens import usd_to_smaipl_tokens
+
+        # ========================
+        # INPUT
+        # ========================
+        old_memory = arguments.get("old_memory", "")
+        new_summary = arguments.get("new_summary", "")
+        domain = arguments.get("domain", "general")
+        model = arguments.get("model", "gpt-4o-mini")
+
+        if not new_summary:
+            return {
+                "result": {
+                    "error": "invalid_input",
+                    "details": "new_summary required"
+                },
+                "usage": usage,
+    		"status": "error"
+            }
+
+        chat = arguments.get('ENV', {}).get('SMAIPL_OPENROUTER_CHATGPT')
+
+        if not chat:
+            return {
+                "result": {
+                    "error": "no llm access"
+                },
+                "usage": usage,
+    		"status": "error"
+            }
+
+        # ========================
+        # PROMPT
+        # ========================
+        system_prompt = f"""
+Ты системный аналитик проекта в сфере {domain}.
+
+Ты ведёшь ДОЛГОСРОЧНУЮ память проекта.
+
+ТВОЯ ЗАДАЧА:
+- выявлять повторяющиеся проблемы
+- отслеживать деградацию или улучшения
+- фиксировать долгосрочные риски
+- убирать шум и разовые события
+
+НЕ ПОВТОРЯЙ summary
+ДЕЛАЙ СЖАТУЮ ПАМЯТЬ
+"""
+
+        user_prompt = f"""
+СТАРАЯ ПАМЯТЬ:
+{old_memory}
+
+НОВОЕ SUMMARY:
+{new_summary}
+
+Обнови память проекта.
+
+СТРУКТУРА:
+- ключевые проблемы
+- риски
+- динамика
+"""
+
+        # ========================
+        # LLM CALL
+        # ========================
+        response = chat(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.2,
+            max_tokens=400
+        )
+
+        text = response['choices'][0]['message']['content']
+
+        total_cost = response.get("usage", {}).get("cost", 0.0)
+
+        return {
+            "result": {
+                "data": text,
+                "success": True
+            },
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": usd_to_smaipl_tokens(total_cost)
+            },
+            "status": "success"
+        }
+
+    except Exception as e:
+        if debug:
+            import traceback
+            traceback.print_exc()
+
+        return {
+            "result": {
+                "error": "execution_error",
+                "details": str(e)
+            },
+            "usage": usage,
+    	    "status": "error"
+        }
