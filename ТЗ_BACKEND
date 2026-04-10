@@ -1,0 +1,401 @@
+ТЗ_BACKEND: Orchestrator + API + Processing Layer
+
+Проект в целом: 
+ Архитектура системы
+
+Система реализована как единый backend-сервис с логическим разделением слоёв:
+
+### 1. Bot (Telegram Bot)
+Ответственность:
+- Приём и отправка сообщений через Telegram API
+- Вызов backend API
+
+Ограничения:
+- Не содержит бизнес-логики
+- Не работает с БД
+
+---
+
+### 2. Backend (Orchestration + Lightweight Intelligence)
+
+Ответственность:
+- Приём сообщений (/messages)
+- Очередь задач и воркеры
+- Управление пайплайном генерации summary
+- Работа с БД (единственный writer)
+
+Дополнительно (ВАЖНО):
+- Backend может содержать лёгкую бизнес-логику:
+  - валидация summary
+  - базовая обработка текста
+  - fallback логика
+
+Ограничения:
+- Не содержит сложной AI-логики (она остаётся в LLM/SMAIPL функциях)
+
+---
+
+### 3. SMAIPL (Logical Layer, embedded)
+
+SMAIPL реализован как набор функций внутри backend:
+
+- stateless функции
+- не имеют доступа к БД
+- принимают данные → возвращают результат
+
+Примеры:
+- генерация summary
+- генерация prompt
+- нормализация текста
+
+---
+
+### Принцип
+
+Физически: один сервис  
+Логически: разделение слоёв сохраняется
+
+Это обеспечивает:
+- простоту разработки
+- масштабируемость
+- соответствие production-практикам
+
+1. 🎯 Назначение
+
+Backend — центральный компонент системы (single source of truth)
+
+Отвечает за:
+
+1. Приём данных от Telegram-ботов
+2. Очередь и запись в БД
+3. Генерацию саммари через SMAIPL
+4. Управление чатами и настройками
+5. Управление webhook
+6. Доставку сообщений в Telegram
+
+2. 🧠 Роль backend
+
+Backend = мозг системы
+
+❗ Только backend:
+
+- управляет webhook
+- пишет в БД
+- вызывает SMAIPL
+- управляет состоянием
+- отправляет сообщения в Telegram
+- выбирает prompt через Prompt Engine
+- управляет версиями prompt
+- поддерживает A/B тестирование
+🔁 Расширение: Context augmentation
+
+Backend может дополнять messages дополнительным контекстом:
+
+Примеры:
+- project memory
+- исторические summary
+- системные инструкции
+
+📌 Реализация:
+контекст может быть встроен в messages как текстовый префикс
+
+📌 Причина:
+упрощение интеграции с LLM без изменения контрактов SMAIPL функций
+🔴 Строгая валидация типов
+
+Backend обязан валидировать:
+
+- chats.chat_type ∈ {team, client}
+- chat_settings.summary_type ∈ {daily, weekly, custom}
+
+❗ Ошибка → 400 Bad Request
+
+📌 Это предотвращает смешение бизнес-логики и расписания
+
+3. 🧠 Архитектура
+Telegram Bot
+   ↓
+Backend API (FastAPI)
+   ↓
+Queue
+   ↓
+Worker (single writer)
+   ↓
+SQLite
+-----------------------
+Scheduler
+   ↓
+Backend
+   ↓
+SMAIPL
+   ↓
+DB
+
+Настройка:
+
+SMAIPL бот:
+    вводит:
+        - bot_token
+        - domain
+
+↓
+func_register_telegram_bot
+    → backend (подключение)
+↓
+Backend:
+    1. регистрирует бота
+    2. создает project(domain)
+    3. ensure_prompts(domain) 
+↓
+Готово
+
+4. 🔌 API
+
+4.1 POST /messages
+
+Назначение:
+приём сообщений
+
+Логика:
+
+1. найти bot по bot_token
+2. проверить is_active
+3. найти или создать chat
+4. НЕ писать в БД
+5. положить в queue
+
+4.2 POST /bots/register
+
+{
+  "bot_token": "...",
+  "user_id": 1
+}
+
+Логика:
+
+1. проверить bot_token через Telegram API
+2. создать bot
+3. сгенерировать webhook_url
+4. вызвать setWebhook
+5. проверить успешность
+
+если не успешно:
+→ is_active = 0
+
+4.3 POST /commands/summary
+
+Назначение:
+ручной запуск саммари
+
+{
+  "chat_id": 1,
+  "period": "day"
+}
+
+4.4 GET /summaries/latest
+
+GET /summaries/latest?chat_id=1
+
+4.5 Chat settings API
+
+POST /chats/set_type  
+POST /chats/set_time  
+POST /chats/set_schedule  
+POST /chats/set_day  
+POST /chats/set_period  
+POST /chats/set_timezone  
+
+🔴 ВАЖНО (обязательное правило):
+
+POST /chats/set_type
+→ обновляет chats.chat_type
+
+POST /chats/set_schedule
+→ обновляет chat_settings.summary_type
+
+❗ Запрещено:
+использовать summary_type для хранения типа чата
+
+4.6 🔴 Разделение логики (обязательное)
+
+Backend обязан строго разделять:
+
+- chats.chat_type → бизнес-тип
+- chat_settings.summary_type → расписание
+
+Нарушение запрещено
+
+🔁 Расширение: Lightweight DB access в API
+
+Backend API (например /messages) может выполнять ограниченные операции чтения БД:
+
+Разрешено:
+- проверка bot_token
+- определение user_id
+- multi-tenant валидация
+
+Запрещено:
+- запись сообщений
+- изменение состояния системы
+
+📌 Цель:
+обеспечение безопасности и изоляции пользователей
+без нарушения принципа single writer
+5. 📥 Очередь
+
+- используется queue.Queue (MVP)
+- отделяет API от записи в БД
+
+6. 🧠 Worker
+
+Только 1 writer (SQLite)
+
+Требования:
+
+- batch insert (до 50 сообщений)
+- retry 3–5 раз
+- exponential backoff (0.1 * 2^attempt)
+- без потери данных
+
+6.1 Типы чатов
+
+team:
+- внутренний чат
+- используется manager summary
+
+client:
+- чат с клиентом
+- используется client draft
+
+❗ pipeline зависит от chat_type
+
+7. 🗄 Работа с БД
+
+Маппинг:
+
+bot_token → bot_id  
+(bot_id + telegram_chat_id) → chat_id  
+chat_id → messages  
+
+Auto-create:
+
+чат создаётся при первом сообщении
+
+Идемпотентность:
+
+UNIQUE(chat_id, telegram_message_id)
+
+8. 🔐 Безопасность
+
+- bot_token не логировать
+- проверка каждого запроса
+- multi-tenant (user_id обязателен)
+
+9. ⏰ Scheduler
+
+- запускается каждые 60 секунд
+- читает chat_settings
+- учитывает timezone (pytz)
+
+🔴 Scheduler использует только:
+
+- summary_type
+- summary_time
+- summary_day
+- timezone
+
+❗ chat_type не влияет на запуск scheduler
+
+🔁 Расширение: Lightweight maintenance в scheduler
+
+Scheduler может выполнять лёгкие операции обслуживания:
+
+Разрешено:
+- удаление устаревших сообщений
+- очистка usage_logs
+- простые housekeeping задачи
+
+Ограничения:
+- операции должны быть быстрыми
+- не должны блокировать основной цикл
+- не должны влиять на pipeline
+
+📌 В будущем может быть вынесено в отдельный worker
+
+10. 🧠 SMAIPL
+
+Backend вызывает:
+
+- func_summarize_chat_and_extract_tasks
+- func_adapt_summary_for_client
+
+🔴 ВАЖНО:
+
+SMAIPL функции:
+
+- stateless
+- не имеют доступа к БД
+- не знают о chat_id / bot_token
+
+Backend полностью управляет:
+
+- orchestration
+- pipeline
+- хранением результатов
+
+11. 🔁 Pipeline
+
+1. получить messages
+2. создать manager summary
+3. создать client draft
+4. сохранить
+
+🔴 Pipeline зависит от chat_type:
+
+team:
+→ только manager summary
+
+client:
+→ manager summary + client draft
+
+12. 📊 summaries
+
+типы:
+
+- manager
+- client_draft
+
+13. 📤 Доставка в Telegram
+
+Backend:
+
+- использует bot_token
+- разбивает сообщения >4000 символов
+- отправляет частями
+
+14. ⚠️ Надёжность
+
+- retry worker
+- retry внешних API (SMAIPL, Telegram)
+- защита от дублей summary (MVP через created_at)
+
+15. 📈 Масштабирование
+
+MVP:
+- SQLite
+- queue.Queue
+
+Рост:
+- Redis (queue)
+- PostgreSQL
+
+16. 🧩 Роли компонентов
+
+Bot:
+- transport + UI
+Backend:
+- orchestration + логика
+SMAIPL:
+- интеллект
+DB:
+- хранение
