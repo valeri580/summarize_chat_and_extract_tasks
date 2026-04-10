@@ -1,0 +1,225 @@
+def func_adapt_summary_for_client(arguments):
+
+    # ========================
+    # ARGUMENTS VALIDATION (SMAIPL CONTRACT)
+    # ========================
+    if not isinstance(arguments, dict):
+        return {
+            "result": {
+                "error": "invalid_arguments",
+                "details": "arguments must be dict"
+            },
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0.0
+            },
+            "status": "error"
+        }  
+
+    debug = arguments.get("debug", False)
+
+    if debug:
+        print(f"DEBUG: Start function {__name__}")
+        print(f"DEBUG: Args: {arguments}")
+
+    # ========================
+    # DEFAULT USAGE (CRITICAL)
+    # ========================
+    usage = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0.0
+    }
+
+    try:
+        # ========================
+        # IMPORTS (SMAIPL RULE)
+        # ========================
+        from smaipl.usd_to_smaipl_tokens import usd_to_smaipl_tokens
+
+        # ========================
+        # INPUT
+        # ========================
+        summary = arguments.get("summary", "")
+        domain = arguments.get("domain", "general")
+        tone = arguments.get("tone", "neutral")
+        model = arguments.get("model", "gpt-4o-mini")
+
+        # NEW: external prompts from backend
+        external_system_prompt = arguments.get("system_prompt")
+        external_user_template = arguments.get("user_template")
+
+        # ========================
+        # VALIDATION
+        # ========================
+        if not isinstance(summary, str) or not summary.strip():
+            return {
+                "result": {
+                    "error": "invalid_input",
+                    "details": "summary must be non-empty string"
+                },
+                "usage": usage,
+    		"status": "error"
+            }
+
+        # ========================
+        # LLM INIT
+        # ========================
+        chat = arguments.get('ENV', {}).get('SMAIPL_OPENROUTER_CHATGPT')
+
+        if not chat:
+            return {
+                "result": {
+                    "error": "no llm access",
+                    "details": "ENV не содержит SMAIPL_OPENROUTER_CHATGPT"
+                },
+                "usage": usage,
+    		"status": "error"
+            }
+
+        # ========================
+        # DEFAULT PROMPTS (fallback)
+        # ========================
+        def build_system_prompt():
+            return (
+                f"Ты профессиональный project-менеджер в сфере {domain}. "
+                "Ты пишешь сообщения клиенту.\n\n"
+                "ЗАДАЧА:\n"
+                "- сохранить факты\n"
+                "- убрать негатив\n"
+                "- показать контроль\n"
+                "- сформировать уверенный и спокойный тон\n\n"
+                "НЕЛЬЗЯ:\n"
+                "- придумывать факты\n"
+                "- искажать информацию\n"
+                "- скрывать критические вещи\n"
+            )
+
+        def build_user_prompt(context):
+            return f"""
+Перепиши управленческое summary в сообщение для клиента.
+
+Контекст:
+Сфера: {domain}
+Тон: {tone}
+
+СТРОГИЕ ПРАВИЛА:
+- не добавляй новую информацию
+- не искажай факты
+- убери резкий негатив
+- покажи контроль
+- текст должен быть готов к отправке
+
+СТРУКТУРА:
+1. Краткий статус
+2. Ключевые обновления
+3. При необходимости — мягкие корректировки
+
+Исходное summary:
+{context}
+"""
+
+        # ========================
+        # PROMPT HELPERS
+        # ========================
+        def build_user_prompt_from_template(template, context):
+            try:
+                return template.format(
+                    summary=context,
+                    context=context,
+                    domain=domain,
+                    tone=tone
+                )
+            except Exception:
+                return context
+
+        # ========================
+        # PROMPT SELECT
+        # ========================
+        system_prompt = external_system_prompt or build_system_prompt()
+
+        if external_user_template:
+            user_prompt = build_user_prompt_from_template(
+                external_user_template,
+                summary
+            )
+        else:
+            user_prompt = build_user_prompt(summary)
+
+        # ========================
+        # LLM CALL
+        # ========================
+        response = chat(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.3,
+            max_tokens=700
+        )
+
+        text = response['choices'][0]['message']['content'].strip()
+
+	# ========================
+	# POST VALIDATION (CRITICAL)
+	# ========================
+	def has_core_facts(original, adapted):
+    	    keywords = ["проблем", "риск", "задерж", "ошиб", "крит"]
+
+    	    original_low = original.lower()
+    	    adapted_low = adapted.lower()
+
+    	    for k in keywords:
+        	if k in original_low and k not in adapted_low:
+            	    return False
+
+    	    return True
+
+
+	if not has_core_facts(summary, text):
+    	    if debug:
+        	print("[VALIDATION_FAIL] facts lost after adaptation")
+
+    	    text = summary  # fallback — возвращаем manager summary
+
+        if not text:
+            text = "Нет данных"
+
+        total_cost = response.get("usage", {}).get("cost", 0.0)
+
+        # ========================
+        # USAGE
+        # ========================
+        usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": usd_to_smaipl_tokens(total_cost)
+        }
+
+        # ========================
+        # RESULT
+        # ========================
+        return {
+            "result": {
+                "data": text,
+                "success": True
+            },
+            "usage": usage,
+            "status": "success"
+        }
+
+    except Exception as e:
+        if debug:
+            import traceback
+            traceback.print_exc()
+
+        return {
+            "result": {
+                "error": "execution_error",
+                "details": str(e)
+            },
+            "usage": usage,
+    	    "status": "error"
+        }
