@@ -1,0 +1,316 @@
+def func_summarize_chat_and_extract_tasks(arguments):
+    # ========================
+    # ARGUMENTS VALIDATION (CRITICAL)
+    # ========================
+    if not isinstance(arguments, dict):
+        return {
+            "result": {
+                "error": "invalid_arguments",
+                "details": "arguments must be dict"
+            },
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0.0
+            },
+            "status": "error"
+        }
+
+    debug = arguments.get("debug", False)
+
+    if debug:
+        print(f"DEBUG start {__name__}")
+        print(f"DEBUG args {arguments}")
+
+    # ========================
+    # DEFAULT USAGE (CRITICAL)
+    # ========================
+    usage = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0.0
+    }
+
+    def ok(data, usage):
+        return {
+            "result": {
+                "data": data,
+                "success": True
+            },
+            "usage": usage,
+            "status": "success"
+        }
+
+    def fail(error, details, usage):
+        return {
+            "result": {
+                "error": error,
+                "details": details,
+                "success": False
+            },
+            "usage": usage,
+            "status": "error"
+        }
+
+    try:
+        # ========================
+        # IMPORTS (SMAIPL RULE)
+        # ========================
+        from smaipl.usd_to_smaipl_tokens import usd_to_smaipl_tokens
+
+        # ========================
+        # INPUT
+        # ========================
+        messages = arguments.get("messages", [])
+	mode = arguments.get("mode", "messages")
+
+	if debug:
+    	    print(f"[MODE] {mode} messages={len(messages)}")
+
+        domain = arguments.get("domain", "general")
+        period = arguments.get("period", "day")
+        model = arguments.get("model", "gpt-4o-mini")
+
+        # NEW: external prompts from backend
+        external_system_prompt = arguments.get("system_prompt")
+        external_user_template = arguments.get("user_template")
+	
+        # ========================
+        # VALIDATION
+        # ========================
+        if not isinstance(messages, list) or not messages:
+    	    return fail("invalid_input", "messages must be non-empty list", usage)
+
+	if mode not in ["messages", "summaries"]:
+            return fail("invalid_mode", "mode must be messages or summaries", usage)
+
+	# strict typing (SMAIPL contract)
+	messages = [str(m) for m in messages if m]
+        # ========================
+        # LLM INIT
+        # ========================
+        chat = arguments.get('ENV', {}).get('SMAIPL_OPENROUTER_CHATGPT')
+
+        if not chat:
+            return {
+                "result": {
+                    "error": "no llm access",
+                    "details": "ENV не содержит SMAIPL_OPENROUTER_CHATGPT"
+                },
+                "usage": usage,
+    		"status": "error"
+            }
+
+        # ========================
+        # DEFAULT PROMPTS (fallback)
+        # ========================
+        def build_system_prompt():
+            return (
+                f"Ты аналитик проекта в сфере {domain}. "
+                "Твоя задача — создать управленческое summary переписки.\n\n"
+                "ВАЖНО:\n"
+                "- не смягчай проблемы\n"
+                "- фиксируй риски\n"
+                "- выделяй задачи\n"
+                "- пиши чётко и по делу"
+            )
+
+        def build_chunk_prompt(context):
+            return f"""
+Проанализируй сообщения команды и выдели:
+
+- ключевые события
+- проблемы
+- риски
+- задачи
+
+Сообщения:
+{context}
+"""
+
+        def build_final_prompt(context):
+            return f"""
+Объедини все summary в единый отчёт.
+
+Сделай:
+
+1. Общую картину
+2. Список проблем
+3. Риски
+4. Задачи
+
+Данные:
+{context}
+"""
+
+        # ========================
+        # PROMPT HELPERS
+        # ========================
+        def build_user_prompt(template, context):
+            try:
+                return template.format(
+                    messages=context,
+                    summary=context,
+                    context=context,
+                    domain=domain,
+                    period=period
+                )
+            except Exception:
+                return context
+
+	def build_final_prompt_from_summaries(context):
+    	    return f"""
+	    Ты получаешь УЖЕ ГОТОВЫЕ summary.
+
+	    Твоя задача:
+	    - НЕ пересказывать
+	    - НЕ делать повторную агрегацию
+	    - НЕ искажать
+
+	    Сделай:
+
+	    1. Общую картину
+	    2. Ключевые проблемы
+	    3. Риски
+	    4. Задачи
+
+	    ВАЖНО:
+	    - работай как senior аналитик
+	    - убери дубли
+	    - сохрани смысл
+
+	    Данные:
+	    {context}
+	    """
+
+        # ========================
+        # CHUNKING
+        # ========================
+        def chunk_by_chars(messages, max_chars=6000):
+	    chunks = []
+    	    current = []
+    	    size = 0
+
+    	    for m in messages:
+		if not isinstance(m, str):
+            	    continue
+
+                size += len(m)
+
+                if size > max_chars:
+                    if current:
+                	chunks.append(current)
+            	    current = [m]
+            	    size = len(m)
+                else:
+                    current.append(m)
+
+            if current:
+                chunks.append(current)
+
+            return chunks
+
+        # ========================
+        # SYSTEM PROMPT (FIXED)
+        # ========================
+        system_prompt = external_system_prompt or build_system_prompt()
+
+        partial_summaries = []
+        total_cost = 0.0
+
+	# ========================
+	# MODE SWITCH (CRITICAL)
+	# ========================
+	if mode == "messages":
+    	    chunks = chunk_by_chars(messages)
+	else:
+    	    # summaries mode → no chunking
+    	    chunks = [messages]
+
+        # ========================
+        # STEP 1: CHUNK SUMMARIES
+        # ========================
+        for chunk in chunks:
+            context = "\n".join(chunk)
+
+            if external_user_template:
+                prompt = build_user_prompt(external_user_template, context)
+            else:
+                prompt = build_chunk_prompt(context)
+
+            response = chat(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.2,
+                max_tokens=500
+            )
+
+            text = response['choices'][0]['message']['content']
+            partial_summaries.append(text)
+
+            total_cost += response.get("usage", {}).get("cost", 0.0)
+
+        # ========================
+        # STEP 2: FINAL SUMMARY
+        # ========================
+        combined_context = "\n\n".join(partial_summaries)
+
+	if mode == "summaries":
+    	    # уже агрегированные данные — не делаем второй уровень агрегации
+    	    combined_context = "\n\n".join(messages)
+
+        if external_user_template:
+    	    final_prompt = build_user_prompt(external_user_template, combined_context)
+	else:
+    	    if mode == "messages":
+        	final_prompt = build_final_prompt(combined_context)
+    	    else:
+        	final_prompt = build_final_prompt_from_summaries(combined_context)
+
+	if debug:
+    	    print(f"[FINAL_STEP] mode={mode} partials={len(partial_summaries)}")
+
+        response = chat(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": final_prompt}
+            ],
+            temperature=0.2,
+            max_tokens=800
+        )
+
+        final_text = response['choices'][0]['message']['content']
+        total_cost += response.get("usage", {}).get("cost", 0.0)
+
+        # ========================
+        # USAGE
+        # ========================
+        usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": usd_to_smaipl_tokens(total_cost)
+        }
+
+        # ========================
+        # RESULT
+        # ========================
+        return ok(final_text, usage)
+
+	
+    except Exception as e:
+        if debug:
+            import traceback
+            traceback.print_exc()
+
+        return {
+            "result": {
+                "error": "execution_error",
+                "details": str(e)
+            },
+            "usage": usage,
+    	    "status": "error"
+        }
