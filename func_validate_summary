@@ -1,0 +1,215 @@
+def func_validate_summary(arguments):
+    # ========================
+    # ARGUMENTS VALIDATION (CRITICAL)
+    # ========================
+    if not isinstance(arguments, dict):
+        return {
+            "result": {
+                "error": "invalid_arguments",
+                "details": "arguments must be dict"
+            },
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0.0
+            },
+            "status": "error"
+        }
+
+    debug = arguments.get("debug", False)
+
+    if debug:
+        print(f"DEBUG start {__name__}")
+        print(f"DEBUG args {arguments}")
+
+    # ========================
+    # DEFAULT USAGE (CRITICAL)
+    # ========================
+    usage = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0.0
+    }
+
+    def ok(data, usage):
+        return {
+            "result": {
+                "data": data,
+                "success": True
+            },
+            "usage": usage,
+            "status": "success"
+        }
+
+    def fail(error, details, usage):
+        return {
+            "result": {
+                "error": error,
+                "details": details,
+                "success": False
+            },
+            "usage": usage,
+            "status": "error"
+        }
+    
+    try:
+        # ========================
+        # IMPORTS (SMAIPL RULE)
+        # ========================
+        from smaipl.usd_to_smaipl_tokens import usd_to_smaipl_tokens
+
+        # ========================
+        # INPUT
+        # ========================
+        summary = arguments.get("summary", "")
+        messages = arguments.get("messages", [])
+        model = arguments.get("model", "gpt-4o-mini")
+
+	# ========================
+        # VALIDATION
+        # ========================
+        if not isinstance(summary, str) or not summary.strip():
+            return fail(
+    		"invalid_summary",
+    		"summary must be non-empty string",
+    		usage
+	    )
+
+        if not isinstance(messages, list) or not messages:
+            return {
+                "result": {
+                    "error": "invalid_messages",
+                    "details": "messages must be non-empty list"
+                },
+                "usage": usage,
+    		"status": "error"
+            }
+
+        # ========================
+        # LLM INIT
+        # ========================
+        chat = arguments.get('ENV', {}).get('SMAIPL_OPENROUTER_CHATGPT')
+
+        if not chat:
+            return {
+                "result": {
+                    "error": "no_llm_access",
+                    "details": "ENV не содержит SMAIPL_OPENROUTER_CHATGPT"
+                },
+                "usage": usage,
+    		"status": "error"
+            }
+
+        # ========================
+        # CONTEXT PREP (ANTI-TOKEN BLOWUP)
+        # ========================
+        MAX_MESSAGES = arguments.get("max_messages", 50)
+	MAX_MESSAGE_LEN = arguments.get("max_message_len", 500)
+	MAX_SUMMARY_LEN = arguments.get("max_summary_len", 5000)
+
+        trimmed_messages = messages[:MAX_MESSAGES]
+
+        messages_text = "\n".join([
+            str(m)[:MAX_MESSAGE_LEN] for m in trimmed_messages if m
+        ])
+
+        summary_text = summary.strip()[:MAX_SUMMARY_LEN]
+
+        # ========================
+        # PROMPT
+        # ========================
+        system_prompt = (
+            "Ты строгий AI-аудитор.\n"
+            "Ты проверяешь достоверность summary по исходным сообщениям.\n\n"
+            "ТВОЯ ЗАДАЧА:\n"
+            "- выявить галлюцинации\n"
+            "- выявить искажения фактов\n"
+            "- выявить добавленные события, которых нет в сообщениях\n\n"
+            "ОЧЕНЬ ВАЖНО:\n"
+            "- не додумывай\n"
+            "- не будь мягким\n"
+            "- если есть сомнение — это FAIL\n"
+        )
+
+        user_prompt = f"""
+ПРОВЕРКА ДОСТОВЕРНОСТИ SUMMARY
+
+SUMMARY:
+{summary_text}
+
+---
+
+MESSAGES:
+{messages_text}
+
+---
+
+ИНСТРУКЦИЯ:
+
+1. Есть ли факты в summary, которых НЕТ в сообщениях?
+2. Есть ли искажения или домыслы?
+3. Есть ли обобщения, не подтверждённые текстом?
+
+---
+
+ФОРМАТ ОТВЕТА (СТРОГО):
+
+OK
+
+или
+
+FAIL
+"""
+
+        # ========================
+        # LLM CALL
+        # ========================
+        response = chat(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0,
+            max_tokens=10
+        )
+
+        text = response['choices'][0]['message']['content'].strip().upper()
+
+        # ========================
+        # PARSE RESULT
+        # ========================
+        if "OK" in text:
+            verdict = "OK"
+        else:
+            verdict = "FAIL"
+
+        # ========================
+        # USAGE
+        # ========================
+        cost = response.get("usage", {}).get("cost", 0.0)
+
+        usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": usd_to_smaipl_tokens(cost)
+        }
+
+        # ========================
+        # RESULT
+        # ========================
+        return ok(verdict, usage)
+
+    except Exception as e:
+        if debug:
+            import traceback
+            traceback.print_exc()
+
+        return {
+            "result": {
+                "error": "execution_error",
+                "details": str(e)
+            },
+            "usage": usage,
+    	    "status": "error"
+        }
