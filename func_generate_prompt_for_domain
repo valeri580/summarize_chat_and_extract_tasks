@@ -1,0 +1,192 @@
+def func_generate_prompt_for_domain(arguments):
+    # ========================
+    # ARGUMENTS VALIDATION (CRITICAL)
+    # ========================
+    if not isinstance(arguments, dict):
+        return {
+            "result": {
+                "error": "invalid_arguments",
+                "details": "arguments must be dict"
+            },
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0.0
+            },
+            "status": "error"
+        }
+
+    debug = arguments.get("debug", False)
+
+    if debug:
+        print(f"DEBUG start {__name__}")
+        print(f"DEBUG args {arguments}")
+
+    # ========================
+    # DEFAULT USAGE (CRITICAL)
+    # ========================
+    usage = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0.0
+    }
+
+    def ok(data, usage):
+        return {
+            "result": {
+                "data": data,
+                "success": True
+            },
+            "usage": usage,
+            "status": "success"
+        }
+
+    def fail(error, details, usage):
+        return {
+            "result": {
+                "error": error,
+                "details": details,
+                "success": False
+            },
+            "usage": usage,
+            "status": "error"
+        }
+
+    try:
+        from smaipl.usd_to_smaipl_tokens import usd_to_smaipl_tokens
+	import json
+	import re
+
+        domain = arguments.get("domain", "").strip()
+	
+	if not re.match(r"^[a-z_]{2,50}$", domain):
+    	    return {
+        	"result": {
+            	    "error": "invalid_domain",
+            	    "details": "domain must match ^[a-z_]{2,50}$"
+        	},
+        	"usage": usage,
+        	"status": "error"
+    	    }
+
+        prompt_type = arguments.get("prompt_type", "summarize")
+        model = arguments.get("model", "gpt-4o-mini")
+
+	
+
+        if not domain:
+            return fail(
+    		"invalid_domain",
+    		"domain required",
+    		usage
+	    )
+
+        chat = arguments.get('ENV', {}).get('SMAIPL_OPENROUTER_CHATGPT')
+        if not chat:
+            return {
+                "result": {"error": "no llm access"},
+		"usage": usage,
+                "status": "error"
+            }
+
+        # ========================
+        # PROMPT LOGIC
+        # ========================
+        if prompt_type == "summarize":
+            task_block = f"""
+Ты создаешь prompt для анализа командных чатов в сфере {domain}.
+
+Фокус:
+- проблемы
+- риски
+- дедлайны
+- ответственность
+
+НЕ смягчать текст
+"""
+        else:
+            task_block = f"""
+Ты создаешь prompt для общения с клиентом в сфере {domain}.
+
+Фокус:
+- уверенность
+- контроль
+- спокойствие
+
+НЕ добавлять новые факты
+"""
+
+        system_prompt = "Ты senior prompt engineer"
+
+        user_prompt = f"""
+{task_block}
+
+Верни JSON:
+
+{{
+  "system_prompt": "...",
+  "user_template": "..."
+}}
+"""
+
+        response = chat(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.3,
+            max_tokens=800
+        )
+
+        text = response['choices'][0]['message']['content'].strip()
+
+	if debug:
+    	    print(f"[LLM_RAW_RESPONSE] {text}")
+
+	try:
+    	    parsed = json.loads(text)
+	except Exception as e:
+    	    if debug:
+        	print("[LLM_JSON_ERROR]")
+        	print("RAW:", text)
+    	raise Exception("Invalid JSON from LLM")	
+
+        system_prompt = parsed.get("system_prompt", "")
+        user_template = parsed.get("user_template", "")
+
+        # ========================
+        # VALIDATION
+        # ========================
+        if len(system_prompt) < 50 or len(user_template) < 20:
+            raise Exception("Prompt too short")
+
+        if "в общем" in system_prompt.lower():
+            raise Exception("Too generic")
+
+        version = f"{prompt_type}_{domain}_v1"
+
+        cost = response.get("usage", {}).get("cost", 0.0)
+
+        return ok({
+    	    "domain": domain,
+    	    "prompt_type": prompt_type,
+    	    "system_prompt": system_prompt,
+    	    "user_template": user_template,
+    	    "version": version
+	}, usage)
+
+    except Exception as e:
+        if debug:
+            import traceback
+            traceback.print_exc()
+
+        # fallback
+        return {
+            "result": {
+                "error": "execution_error",
+        	"details": str(e)
+            },
+            "usage": usage,
+	    "status": "error"
+        }
