@@ -1,0 +1,215 @@
+def func_register_telegram_bot(arguments):
+    # ========================
+    # ARGUMENTS VALIDATION (CRITICAL)
+    # ========================
+    if not isinstance(arguments, dict):
+        return {
+            "result": {
+                "error": "invalid_arguments",
+                "details": "arguments must be dict"
+            },
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0.0
+            },
+            "status": "error"
+        }
+
+    debug = arguments.get("debug", False)
+
+    if debug:
+        print(f"DEBUG start {__name__}")
+        print(f"DEBUG args {arguments}")
+
+    # ========================
+    # DEFAULT USAGE (CRITICAL)
+    # ========================
+    usage = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0.0
+    }
+
+    try:
+        # ========================
+        # IMPORTS (SMAIPL RULE)
+        # ========================
+        import requests
+        import traceback
+
+        # ========================
+        # INPUT
+        # ========================
+        bot_token = arguments.get("bot_token", "").strip()
+        user_id = arguments.get("user_id", 0)
+
+        if debug:
+            print(f"DEBUG: bot_token exists = {bool(bot_token)}")
+            print(f"DEBUG: user_id = {user_id}")
+
+        # ========================
+        # VALIDATION
+        # ========================
+        if not bot_token:
+            return {
+                "result": {
+                    "error": "bot_token required",
+                    "details": "Пустой bot_token"
+                },
+                "usage": usage,
+		"status": "error"
+            }
+
+        if ":" not in bot_token:
+            return {
+                "result": {
+                    "error": "invalid bot_token",
+                    "details": "Некорректный формат токена"
+                },
+                "usage": usage,
+    		"status": "error"
+            }
+
+        if not user_id:
+            return {
+                "result": {
+                    "error": "user_id required",
+                    "details": "user_id не передан"
+                },
+                "usage": usage,
+    		"status": "error"
+            }
+
+        # ========================
+        # CONFIG
+        # ========================
+        backend_url = arguments.get(
+            "backend_url",
+            "https://your-backend.com"
+        )
+
+        if debug:
+            print(f"DEBUG: backend_url = {backend_url}")
+
+        url = f"{backend_url}/bots/register"
+
+        # ========================
+        # REQUEST → BACKEND
+        # ========================
+        if debug:
+            print("DEBUG: Sending request to backend...")
+
+        try:
+            response = requests.post(
+                url,
+                json={
+                    "bot_token": bot_token,
+                    "user_id": user_id
+                },
+                timeout=10
+            )
+
+        except requests.Timeout:
+            if debug:
+                print("DEBUG: Backend timeout")
+            return {
+                "result": {
+                    "error": "timeout",
+                    "details": "Backend не ответил вовремя"
+                },
+                "usage": usage,
+    		"status": "error"
+            }
+
+        except requests.RequestException as e:
+            if debug:
+                print("DEBUG: Request failed")
+                traceback.print_exc()
+
+            return {
+                "result": {
+                    "error": "request_failed",
+                    "details": str(e)
+                },
+                "usage": usage,
+    		"status": "error"
+            }
+
+        # ========================
+        # RESPONSE CHECK
+        # ========================
+        if debug:
+            print(f"DEBUG: Response status = {response.status_code}")
+
+        if response.status_code != 200:
+            return {
+                "result": {
+                    "error": "backend_error",
+                    "details": f"HTTP {response.status_code}"
+                },
+                "usage": usage,
+    		"status": "error"
+            }
+
+        # ========================
+        # PARSE RESPONSE
+        # ========================
+        try:
+            data = response.json()
+        except Exception:
+            if debug:
+                print("DEBUG: Failed to parse JSON")
+                print("DEBUG: Raw response:", response.text)
+
+            return {
+                "result": {
+                    "error": "invalid_response",
+                    "details": "Backend вернул не JSON"
+                },
+                "usage": usage,
+    		"status": "error"
+            }
+
+        if debug:
+            print("DEBUG: Backend response:", data)
+
+        # ========================
+        # BUSINESS CHECK
+        # ========================
+        if isinstance(data, dict) and data.get("error"):
+            return {
+                "result": {
+                    "error": "backend_logic_error",
+                    "details": data
+                },
+                "usage": usage,
+    		"status": "error"
+            }
+
+        # ========================
+        # SUCCESS
+        # ========================
+        return {
+            "result": {
+                "data": data,
+                "success": True
+            },
+            "usage": usage,
+            "status": "success"
+        }
+
+    except Exception as e:
+        if debug:
+            print("DEBUG: Exception in main try")
+            import traceback
+            traceback.print_exc()
+
+        return {
+            "result": {
+                "error": "execution_error",
+                "details": str(e)
+            },
+            "usage": usage,
+    	    "status": "error"
+        }
