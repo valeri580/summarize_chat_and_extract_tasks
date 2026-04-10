@@ -1,0 +1,57 @@
+name: smaipl_functions_tests
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.10"
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+
+    # ========================
+    # CORE TESTS (PIPELINE ORDER)
+    # ========================
+
+    - name: Run summarize tests
+      run: python run_func_summarize_chat_and_extract_tasks.py
+
+    - name: Run validate summary tests
+      run: python run_func_validate_summary.py
+
+    - name: Run adapt tests
+      run: python run_func_adapt_summary_for_client.py
+
+    # ========================
+    # PROMPTS ENGINE
+    # ========================
+
+    - name: Run generate prompt tests
+      run: python run_func_generate_prompt_for_domain.py
+
+    # ========================
+    # MEMORY (NEW)
+    # ========================
+
+    - name: Run update project memory tests
+      run: python run_func_update_project_memory.py
+
+    # ========================
+    # ONBOARDING
+    # ========================
+
+    - name: Run register tests
+      run: python run_func_register_telegram_bot.py
