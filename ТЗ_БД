@@ -1,0 +1,223 @@
+📘 Техническое задание: База данных 
+1 Общие требования
+1. БД должна быть multi-tenant
+2. Пользователи изолированы друг от друга
+3. Все данные строго связаны с user_id
+4. Поддержка нескольких Telegram-ботов на пользователя
+5. Поддержка нескольких проектов и чатов
+________________________________________
+2 Таблицы
+________________________________________
+👤 users
+users
+- id INTEGER PRIMARY KEY
+- name TEXT
+- telegram_user_id TEXT
+- created_at TIMESTAMP
+________________________________________
+🤖 bots
+bots
+- id INTEGER PRIMARY KEY
+- user_id INTEGER
+- bot_token TEXT UNIQUE
+- bot_name TEXT
+- webhook_url TEXT
+- is_active BOOLEAN DEFAULT 1
+- created_at TIMESTAMP
+
+FOREIGN KEY (user_id) REFERENCES users(id)
+Поле is_active используется для логического отключения бота.
+Если is_active = 0, сообщения от бота не должны обрабатываться.
+________________________________________
+📁 projects
+projects
+- id INTEGER PRIMARY KEY
+- user_id INTEGER
+- name TEXT
+- domain TEXT
+- created_at TIMESTAMP
+
+FOREIGN KEY (user_id) REFERENCES users(id)
+________________________________________
+💬 chats
+chats
+- id INTEGER PRIMARY KEY
+- project_id INTEGER
+- bot_id INTEGER
+- telegram_chat_id TEXT
+- chat_type TEXT  -- team / client
+
+🔴 ВАЖНО:
+Поле chat_type определяет тип чата:
+- team — внутренний командный чат
+- client — чат с клиентом
+
+Используется для:
+- выбора логики саммари
+- определения tone (через SMAIPL)
+- разделения бизнес-контекста
+
+❗ НЕ связано с расписанием саммари
+
+- title TEXT
+- last_run_at TIMESTAMP -- время последнего запуска scheduler (анти-дубликаты)
+- created_at TIMESTAMP
+
+FOREIGN KEY (project_id) REFERENCES projects(id)
+FOREIGN KEY (bot_id) REFERENCES bots(id)
+________________________________________
+📝 messages
+messages
+- id INTEGER PRIMARY KEY
+- chat_id INTEGER
+- telegram_message_id TEXT
+- user_name TEXT
+- text TEXT
+- timestamp TIMESTAMP
+
+FOREIGN KEY (chat_id) REFERENCES chats(id)
+
+UNIQUE (chat_id, telegram_message_id)
+________________________________________
+⚙️ chat_settings
+chat_settings
+
+- id INTEGER PRIMARY KEY
+- chat_id INTEGER
+
+-- включение
+- summary_enabled BOOLEAN
+
+-- тип расписания саммари:
+-- daily / weekly / custom
+- summary_type TEXT
+
+🔴 ВАЖНО:
+Поле summary_type отвечает ТОЛЬКО за расписание запуска саммари:
+
+- daily — ежедневно
+- weekly — раз в неделю
+- custom — кастомный диапазон
+
+❗ НЕ хранит тип чата
+❗ НЕ используется для бизнес-логики
+
+❗ Запрещено использовать summary_type для значений:
+- team
+- client
+
+-- время отправки (HH:MM)
+- summary_time TEXT
+
+-- день недели (если weekly)
+- summary_day TEXT
+
+-- период анализа
+-- day / week / custom_range
+- period_type TEXT
+
+-- для custom_range
+- period_start TIMESTAMP
+- period_end TIMESTAMP
+
+-- timezone пользователя
+- timezone TEXT
+
+FOREIGN KEY (chat_id) REFERENCES chats(id) ________________________________________
+📊 summaries
+summaries
+- id INTEGER PRIMARY KEY
+- chat_id INTEGER
+- type TEXT  -- manager / client_draft
+- period_start TIMESTAMP
+- period_end TIMESTAMP
+- text TEXT
+- created_at TIMESTAMP
+
+FOREIGN KEY (chat_id) REFERENCES chats(id)
+
+________________________________________
+🧠 prompts
+- id
+- type (summarize / adapt)
+- name
+🧠 prompt_versions
+- id
+- prompt_id
+- domain
+- version
+- system_prompt
+- user_template
+- is_active
+- created_at
+🧠 prompt_tests
+- id
+- prompt_id
+- domain
+- version_a
+- version_b
+- traffic_split
+- is_active
+ 	
+💰 usage_logs
+usage_logs
+- id INTEGER PRIMARY KEY
+- user_id INTEGER
+- function_name TEXT
+- tokens_used FLOAT
+- prompt_version TEXT  -- версия промпта (A/B тестирование и аналитика)
+- created_at TIMESTAMP
+
+FOREIGN KEY (user_id) REFERENCES users(id)________________________________________
+2.1 🔴 Разделение логики (ОБЯЗАТЕЛЬНО)
+
+В системе используется строгое разделение:
+
+1. chats.chat_type
+   → отвечает за БИЗНЕС-ТИП чата:
+   - team
+   - client
+
+2. chat_settings.summary_type
+   → отвечает за РАСПИСАНИЕ:
+   - daily
+   - weekly
+   - custom
+
+❗ Эти поля не должны пересекаться
+
+❗ Нарушение приведёт к:
+- некорректной работе scheduler
+- неправильной генерации саммари
+- ошибкам в бизнес-логике
+
+Пример корректного состояния:
+
+chat_type = "team"
+summary_type = "daily"
+
+chat_type = "client"
+summary_type = "weekly"
+3 Индексы
+CREATE INDEX idx_messages_chat_time ON messages(chat_id, timestamp);
+CREATE INDEX idx_summaries_chat ON summaries(chat_id, created_at);
+CREATE INDEX idx_chats_type ON chats(chat_type);
+
+-- 🔥 ДОПОЛНИТЕЛЬНО (для производительности API)
+CREATE INDEX idx_bots_token ON bots(bot_token);________________________________________
+4 Настройки SQLite
+PRAGMA journal_mode=WAL;
+PRAGMA synchronous=NORMAL;
+PRAGMA busy_timeout=5000;
+________________________________________
+5 Политика хранения
+1. Хранить сообщения 30–60 дней
+2. Старые данные удалять или архивировать
+________________________________________
+6 Производительность
+Индексы обязательны для:
+- messages(chat_id, timestamp)
+- summaries(chat_id, created_at)
+- bots(bot_token)
+Отсутствие индексов приведёт к деградации системы при росте данных.
+
